@@ -1,6 +1,5 @@
 use nom::branch::alt;
-use nom::bytes::complete::{escaped, tag, take_till, take_till1, take_while1};
-use nom::character::complete::none_of;
+use nom::bytes::complete::{tag, take_till, take_till1, take_while1};
 use nom::sequence::delimited;
 use nom::IResult;
 
@@ -19,20 +18,51 @@ const SCOPE_END: &[&str] = &[
 // for some commands we don't want the auto-nesting behavior: all arguments should be shown on the same level
 const DISABLED_NESTING: &[&str] = &["option", "set", "foreach", "list", "string", "file"];
 
+struct Cli {
+    help: bool,
+    in_place: bool,
+    path: String,
+}
+impl Cli {
+    fn from_env() -> Option<Cli> {
+        let mut args = pico_args::Arguments::from_env();
+        Some(Cli {
+            help: args.contains(["-h", "--help"]),
+            in_place: args.contains("-i"),
+            path: args.free().ok()?.get(0)?.clone(),
+        })
+    }
+
+    fn print_help() {
+        println!(
+            "USAGE: {} [options] <file>\n",
+            std::env::args().next().unwrap()
+        );
+        println!("OPTIONS:");
+        println!("  -i  - Inplace edit <file>, if specified");
+    }
+}
+
 fn main() -> std::io::Result<()> {
-    let args: Vec<_> = std::env::args().collect();
-    let input = match args.get(1) {
-        Some(path) => std::fs::read_to_string(path)?,
+    let args = match Cli::from_env() {
+        Some(args) if args.help => {
+            Cli::print_help();
+            std::process::exit(0);
+        }
+        Some(args) => args,
         None => {
-            eprintln!("usage: {} <input_file>", args[0]);
+            Cli::print_help();
             std::process::exit(1);
         }
     };
 
-    let input = input.as_str();
-
-    let result = format_str(input);
-    println!("{}", result);
+    let input = std::fs::read_to_string(&args.path)?;
+    let result = format_str(&input);
+    if args.in_place {
+        std::fs::write(&args.path, result)?;
+    } else {
+        println!("{}", result);
+    }
 
     Ok(())
 }
@@ -68,7 +98,7 @@ pub fn format_str(mut input: &str) -> String {
             }
             input = remainder;
         } else {
-            println!("result so far: {:?}", result);
+            println!("result so far: {}", result);
             panic!("remainder: {:?}", input);
         }
     }
@@ -391,9 +421,18 @@ fn parse_unquoted_arg(input: &str) -> IResult<&str, &str> {
 }
 
 fn parse_string(input: &str) -> IResult<&str, &str> {
-    let esc = escaped(none_of("\\\""), '\\', tag("\""));
-    let esc_or_empty = alt((esc, tag("")));
-    delimited(tag("\""), esc_or_empty, tag("\""))(input)
+    let (input, _) = tag("\"")(input)?;
+    let mut skip_delimiter = false;
+    for (i, ch) in input.char_indices() {
+        if ch == '\\' && !skip_delimiter {
+            skip_delimiter = true;
+        } else if ch == '"' && !skip_delimiter {
+            return Ok((&input[i + 1..], &input[..i]));
+        } else {
+            skip_delimiter = false;
+        }
+    }
+    Err(nom::Err::Incomplete(nom::Needed::Unknown))
 }
 
 #[cfg(test)]
@@ -515,6 +554,41 @@ endif()\n";
         let input = "if(NOT ( \"${_type}\" STREQUAL \"INTERFACE_LIBRARY\"))endif()";
         let expected = "if(NOT (\"${_type}\" STREQUAL \"INTERFACE_LIBRARY\"))
 endif()\n";
+        let formatted = format_str(input);
+        assert_eq!(expected, formatted);
+    }
+
+    #[test]
+    fn string() {
+        let input = "file(WRITE ${_license_bin_file} \"# Licenses for incorporated software in ModuleWorks ${MW_INSTALL_PACKAGE}\\n\\n\")\r\n";
+        let expected = "file(
+\tWRITE
+\t${_license_bin_file}
+\t\"# Licenses for incorporated software in ModuleWorks ${MW_INSTALL_PACKAGE}\\n\\n\"
+)\n";
+        let formatted = format_str(input);
+        assert_eq!(expected, formatted);
+    }
+
+    #[test]
+    fn cpack() {
+        let input = r#"file(APPEND "${_package_file}"
+        "set(CPACK_PACKAGE_NAME \"${_package_name}\")\n"
+        "set(CPACK_PACKAGE_DESCRIPTION \"N/A\")\n"
+        "set(CPACK_INSTALLED_DIRECTORIES \"${MW_PACKAGES_DIR}/${_package_name};.\")\n"
+        "set(CPACK_GENERATOR \"${CPACK_GENERATOR}\")\n"
+        "set(CPACK_PACKAGE_VERSION \"${CPACK_PACKAGE_VERSION}\")\n"
+        "set(CPACK_PACKAGE_FILE_NAME \"${CPACK_PACKAGE_FILE_NAME}\")\n")"#;
+        let expected = "file(
+\tAPPEND
+\t\"${_package_file}\"
+\t\"set(CPACK_PACKAGE_NAME \\\"${_package_name}\\\")\\n\"
+\t\"set(CPACK_PACKAGE_DESCRIPTION \\\"N/A\\\")\\n\"
+\t\"set(CPACK_INSTALLED_DIRECTORIES \\\"${MW_PACKAGES_DIR}/${_package_name};.\\\")\\n\"
+\t\"set(CPACK_GENERATOR \\\"${CPACK_GENERATOR}\\\")\\n\"
+\t\"set(CPACK_PACKAGE_VERSION \\\"${CPACK_PACKAGE_VERSION}\\\")\\n\"
+\t\"set(CPACK_PACKAGE_FILE_NAME \\\"${CPACK_PACKAGE_FILE_NAME}\\\")\\n\"
+)\n";
         let formatted = format_str(input);
         assert_eq!(expected, formatted);
     }

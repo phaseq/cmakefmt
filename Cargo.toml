@@ -8,6 +8,7 @@ edition = "2018"
 
 [dependencies]
 nom = "5.1.2"
+pico-args = "0.3.3"
 
 [profile.release]
 lto = true
