@@ -8,4 +8,9 @@ edition = "2018"
 
 [dependencies]
 nom = "5.1.2"
-lazy_static = "1.4.0"
+
+[profile.release]
+lto = true
+opt-level = 'z'
+codegen-units = 1
+panic = 'abort'

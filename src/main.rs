@@ -1,15 +1,13 @@
-use lazy_static::lazy_static;
 use nom::branch::alt;
 use nom::bytes::complete::{escaped, tag, take_till, take_till1, take_while1};
 use nom::character::complete::none_of;
 use nom::sequence::delimited;
 use nom::IResult;
-use std::collections::HashMap;
 
-const SCOPE_BEGIN: &'static [&'static str] = &[
+const SCOPE_BEGIN: &[&str] = &[
     "if", "else", "elseif", "while", "foreach", "function", "macro",
 ];
-const SCOPE_END: &'static [&'static str] = &[
+const SCOPE_END: &[&str] = &[
     "else",
     "elseif",
     "endif",
@@ -18,82 +16,8 @@ const SCOPE_END: &'static [&'static str] = &[
     "endfunction",
     "endmacro",
 ];
-
-lazy_static! {
-    static ref SCOPE_ARGS_BEGIN: HashMap<&'static str, Vec<(String, usize)>> = [
-        ("add_library", vec![("PUBLIC", 0), ("PRIVATE", 0), ("INTERFACE", 0)]),
-        ("add_executable", vec![("PUBLIC", 0), ("PRIVATE", 0), ("INTERFACE", 0)]),
-        ("get_property", vec![("DIRECTORY", 0), ("TARGET", 0), ("SOURCE", 0), ("INSTALL", 0), ("TEST", 0), ("CACHE", 0), ("PROPERTY", 0)]),
-        ("set_target_properties", vec![("PROPERTIES", 0)]),
-        (
-            "install",
-            vec![
-                // installing files
-                ("FILES", 0),
-                ("PROGRAMS", 0),
-                ("PERMISSIONS", 0),
-                ("CONFIGURATIONS", 0),
-                ("PATTERN", 0),
-                ("REGEX", 0),
-                ("TYPE", 0),
-                ("DESTINATION", 0),
-                ("COMPONENT", 0),
-                ("RENAME", 0),
-
-                // installing directories
-                ("DIRECTORY", 0),
-                ("FILE_PERMISSIONS", 0),
-                ("DIRECTORY_PERMISSIONS", 0),
-                //("CONFIGURATIONS", 0),
-                //("TYPE", 0),
-                //("DESTINATION", 0),
-                //("COMPONENT", 0),
-                //("PATTERN", 0),
-                //("REGEX", 0),
-
-                // installing exports
-                //("PERMISSIONS", 0),
-                //("CONFIGURATIONS", 0),
-                ("EXPORT", 0),
-                //("DESTINATION", 0),
-                ("NAMESPACE", 0),
-                ("FILE", 0),
-                //("COMPONENT", 0),
-
-                // custom install logic
-                ("SCRIPT", 0),
-                ("CODE", 0),
-                //("COMPONENT", 0),
-            ]
-        ),
-        (
-            "__install_targets",
-            vec![
-                // installing targets
-                ("TARGETS", 0),
-                ("ARCHIVE", 0),
-                ("LIBRARY", 0),
-                ("RUNTIME", 0),
-                ("OBJECTS", 0),
-                ("FRAMEWORK", 0),
-                ("BUNDLE", 0),
-                ("PRIVATE_HEADER", 0),
-                ("PUBLIC_HEADER", 0),
-                ("RESOURCE", 0),
-                ("DESTINATION", 1),
-                ("PERMISSIONS", 1),
-                ("CONFIGURATIONS", 1),
-                ("COMPONENT", 1),
-                ("NAMELINK_COMPONENT", 1),
-                ("NAMELINK_SKIP", 1),
-                ("INCLUDES", 0),
-            ]
-        )
-    ]
-    .iter()
-    .map(|(k, v)| (k.clone(), v.iter().map(|(v,l)| (v.to_string(),*l)).collect()))
-    .collect();
-}
+// for some commands we don't want the auto-nesting behavior: all arguments should be shown on the same level
+const DISABLED_NESTING: &[&str] = &["option", "set", "foreach", "list", "string", "file"];
 
 fn main() -> std::io::Result<()> {
     let args: Vec<_> = std::env::args().collect();
@@ -156,11 +80,7 @@ fn format_function(function: &Function, indent_n: usize) -> String {
     let n_indent = match len {
         Some(len) => {
             if len < 80 - 4 * indent_n {
-                if SCOPE_ARGS_BEGIN.get(&function.name).is_none() {
-                    None
-                } else {
-                    Some(indent_n + 1)
-                }
+                None // output all in one line
             } else {
                 Some(indent_n + 1)
             }
@@ -184,7 +104,7 @@ fn format_function_args(
     indent_n: Option<usize>,
     function_name: &str,
 ) {
-    if args.len() == 0 {
+    if args.is_empty() {
         return;
     }
     match indent_n {
@@ -196,12 +116,13 @@ fn format_function_args(
             }
         }
         None => {
-            for arg in args {
-                if !result.is_empty() {
+            for (i, arg) in args.iter().enumerate() {
+                if i != 0 {
                     result.push(' ');
                 }
                 match arg {
-                    Arg::Plain(v) => result.push_str(&format!("{}", v)),
+                    Arg::Keyword(v) => result.push_str(v),
+                    Arg::Unquoted(v) => result.push_str(v),
                     Arg::Quoted(v) => result.push_str(&format!("\"{}\"", v)),
                     Arg::Comment(_) => unreachable!(),
                     Arg::TrailingComment(_) => unreachable!(),
@@ -245,9 +166,10 @@ fn format_function_arg(
         "\n".to_string() + &"\t".repeat(indent_n)
     };
     match arg {
-        Arg::Plain(v) => result.push_str(&format!("{}{}", indent, v)),
+        Arg::Unquoted(v) | Arg::Keyword(v) | Arg::Comment(v) => {
+            result.push_str(&format!("{}{}", indent, v))
+        }
         Arg::Quoted(v) => result.push_str(&format!("{}\"{}\"", indent, v)),
-        Arg::Comment(v) => result.push_str(&format!("{}{}", indent, v)),
         Arg::TrailingComment(v) => result.push_str(&format!("  {}", v)),
         Arg::Braced(v) => {
             result.push_str(&indent);
@@ -288,15 +210,20 @@ fn section_args_recurse<'a, 'b>(
     let mut result: Vec<Section> = vec![];
     while cur_idx < args.len() {
         let &(arg, indent) = &args[cur_idx];
-        if indent == cur_indent {
-            result.push(Section::new(arg));
-            cur_idx += 1;
-        } else if indent > cur_indent {
-            let (members, next_idx) = section_args_recurse(args, cur_indent + 1, cur_idx);
-            cur_idx = next_idx;
-            result.last_mut().unwrap().members = members;
-        } else {
-            break;
+        use std::cmp::Ordering;
+        match indent.cmp(&cur_indent) {
+            Ordering::Equal => {
+                result.push(Section::new(arg));
+                cur_idx += 1;
+            }
+            Ordering::Greater => {
+                let (members, next_idx) = section_args_recurse(args, cur_indent + 1, cur_idx);
+                cur_idx = next_idx;
+                result.last_mut().unwrap().members = members;
+            }
+            Ordering::Less => {
+                break;
+            }
         }
     }
     (result, cur_idx)
@@ -304,35 +231,30 @@ fn section_args_recurse<'a, 'b>(
 
 type IndentArg<'a> = (&'a Arg<'a>, usize);
 fn indent_args<'a>(args: &'a [Arg<'a>], function_name: &'a str) -> Vec<IndentArg<'a>> {
-    let section_begin = match args.get(0) {
-        Some(Arg::Plain("TARGETS")) if function_name == "install" => SCOPE_ARGS_BEGIN
-            .get("__install_targets")
-            .map(Vec::as_slice)
-            .unwrap_or(&[]),
-        _ => SCOPE_ARGS_BEGIN
-            .get(function_name)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]),
+    let extra_indent: &[&'static str] = match args.get(0) {
+        Some(Arg::Keyword("TARGETS")) if function_name == "install" => &[
+            "DESTINATION",
+            "PERMISSIONS",
+            "CONFIGURATIONS",
+            "COMPONENT",
+            "NAMELINK_COMPONENT",
+            "NAMELINK_SKIP",
+        ],
+        _ if function_name == "install" => &["EXCLUDE"],
+        _ => &[],
     };
+    let allow_nesting = !DISABLED_NESTING.contains(&function_name);
 
     let mut result: Vec<IndentArg> = vec![];
     let mut cur_indent = 0;
     for arg in args {
         match arg {
-            Arg::Plain(v) => {
-                let scope = section_begin.iter().find(|s| s.0 == **v);
-                //let is_end = section_end.iter().find(|s| s == v).is_some();
-                match scope {
-                    Some(&(_, level)) => {
-                        result.push((arg, level));
-                        cur_indent = level + 1;
-                    }
-                    None => {
-                        result.push((arg, cur_indent));
-                    }
-                }
+            Arg::Keyword(v) if allow_nesting => {
+                let level = if extra_indent.contains(v) { 1 } else { 0 };
+                result.push((arg, level));
+                cur_indent = level + 1;
             }
-            Arg::Quoted(_) | Arg::Comment(_) | Arg::TrailingComment(_) | Arg::Braced(_) => {
+            _ => {
                 result.push((arg, cur_indent));
             }
         }
@@ -347,7 +269,8 @@ fn function_args_len(args: &[Arg]) -> Option<usize> {
     let mut sum = 0usize;
     for arg in args {
         match arg {
-            Arg::Plain(v) => sum += v.len(),
+            Arg::Keyword(v) => sum += v.len(),
+            Arg::Unquoted(v) => sum += v.len(),
             Arg::Quoted(v) => sum += v.len() + 2,
             Arg::Comment(_) => return None,
             Arg::TrailingComment(_) => return None,
@@ -387,14 +310,16 @@ struct Function<'a> {
 }
 #[derive(Debug)]
 enum Arg<'a> {
-    Plain(&'a str),
+    Keyword(&'a str),
+    Unquoted(&'a str),
     Quoted(&'a str),
     Comment(&'a str),
     TrailingComment(&'a str),
     Braced(Vec<Arg<'a>>),
 }
+
 fn parse_function<'a>(input: &'a str) -> IResult<&'a str, Function<'a>> {
-    let (input, name) = parse_token(input)?;
+    let (input, name) = parse_unquoted_arg(input)?;
     let (input, _) = nom::multi::many0_count(parse_space)(input)?;
     let (input, args) = delimited(tag("("), parse_function_args, tag(")"))(input)?;
     Ok((input, Function { name, args }))
@@ -420,9 +345,12 @@ fn parse_function_args<'a>(input: &'a str) -> IResult<&'a str, Vec<Arg<'a>>> {
         } else if let Ok((i, c)) = parse_comment(input) {
             input = i;
             r.push(Arg::Comment(c));
-        } else if let Ok((i, t)) = parse_token(input) {
+        } else if let Ok((i, c)) = parse_keyword(input) {
             input = i;
-            r.push(Arg::Plain(t));
+            r.push(Arg::Keyword(c));
+        } else if let Ok((i, t)) = parse_unquoted_arg(input) {
+            input = i;
+            r.push(Arg::Unquoted(t));
         }
         if let Ok((i, _)) = parse_trailing_spaces(input) {
             input = i; // skip spaces
@@ -451,7 +379,13 @@ fn parse_trailing_spaces(input: &str) -> IResult<&str, &str> {
     take_while1(|c| c == ' ' || c == '\t')(input)
 }
 
-fn parse_token(input: &str) -> IResult<&str, &str> {
+fn parse_keyword(input: &str) -> IResult<&str, &str> {
+    let (input, keyword) = take_while1(|c| ('A'..='Z').contains(&c) || "_-".contains(c))(input)?;
+    alt((parse_space, tag(")")))(input)?;
+    Ok((input, keyword))
+}
+
+fn parse_unquoted_arg(input: &str) -> IResult<&str, &str> {
     //take_while1(|c| nom::AsChar::is_alphanum(c) || "_.${}-<>=/\\".contains(c))(input)
     take_till1(|c| " \t\n\r()".contains(c))(input)
 }
@@ -555,6 +489,32 @@ install(
 \tDIRECTORY
 \tPROPERTY some_property
 )\n";
+        let formatted = format_str(input);
+        assert_eq!(expected, formatted);
+    }
+
+    #[test]
+    fn option() {
+        let input = "if(1)option(
+            MW_RELEASECUT_INSTALL_MWSUPPORT
+                    ${MW_SUPPORT_OPTION_DESCRIPTION}
+                    OFF)endif()";
+        let expected = "if(1)
+\toption(
+\t\tMW_RELEASECUT_INSTALL_MWSUPPORT
+\t\t${MW_SUPPORT_OPTION_DESCRIPTION}
+\t\tOFF
+\t)
+endif()\n";
+        let formatted = format_str(input);
+        assert_eq!(expected, formatted);
+    }
+
+    #[test]
+    fn conditions() {
+        let input = "if(NOT ( \"${_type}\" STREQUAL \"INTERFACE_LIBRARY\"))endif()";
+        let expected = "if(NOT (\"${_type}\" STREQUAL \"INTERFACE_LIBRARY\"))
+endif()\n";
         let formatted = format_str(input);
         assert_eq!(expected, formatted);
     }
