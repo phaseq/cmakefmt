@@ -6,10 +6,12 @@ use nom::sequence::delimited;
 use nom::IResult;
 use std::collections::HashMap;
 
-const SCOPE_BEGIN: &'static [&'static str] =
-    &["if", "else", "while", "foreach", "function", "macro"];
+const SCOPE_BEGIN: &'static [&'static str] = &[
+    "if", "else", "elseif", "while", "foreach", "function", "macro",
+];
 const SCOPE_END: &'static [&'static str] = &[
     "else",
+    "elseif",
     "endif",
     "endwhile",
     "endforeach",
@@ -18,109 +20,78 @@ const SCOPE_END: &'static [&'static str] = &[
 ];
 
 lazy_static! {
-    static ref SCOPE_ARGS_BEGIN: HashMap<&'static str, Vec<String>> = [
-        ("add_library", vec!["PUBLIC", "PRIVATE", "INTERFACE"]),
-        ("add_executable", vec!["PUBLIC", "PRIVATE", "INTERFACE"]),
+    static ref SCOPE_ARGS_BEGIN: HashMap<&'static str, Vec<(String, usize)>> = [
+        ("add_library", vec![("PUBLIC", 0), ("PRIVATE", 0), ("INTERFACE", 0)]),
+        ("add_executable", vec![("PUBLIC", 0), ("PRIVATE", 0), ("INTERFACE", 0)]),
+        ("get_property", vec![("DIRECTORY", 0), ("TARGET", 0), ("SOURCE", 0), ("INSTALL", 0), ("TEST", 0), ("CACHE", 0), ("PROPERTY", 0)]),
+        ("set_target_properties", vec![("PROPERTIES", 0)]),
         (
             "install",
             vec![
-                // installing targets
-                "TARGETS",
-                "ARCHIVE",
-                "LIBRARY",
-                "RUNTIME",
-                "OBJECTS",
-                "FRAMEWORK",
-                "BUNDLE",
-                "PRIVATE_HEADER",
-                "PUBLIC_HEADER",
-                "RESOURCE",
-                "PERMISSIONS",
-                "CONFIGURATIONS",
-                "NAMELINK_COMPONENT",
-
                 // installing files
-                "FILES",
-                "PROGRAMS",
-                // "PERMISSIONS",
-                // "CONFIGURATIONS",
-                "PATTERN",
-                "REGEX",
+                ("FILES", 0),
+                ("PROGRAMS", 0),
+                ("PERMISSIONS", 0),
+                ("CONFIGURATIONS", 0),
+                ("PATTERN", 0),
+                ("REGEX", 0),
+                ("TYPE", 0),
+                ("DESTINATION", 0),
+                ("COMPONENT", 0),
+                ("RENAME", 0),
 
                 // installing directories
-                "DIRECTORY",
-                "FILE_PERMISSIONS",
-                "DIRECTORY_PERMISSIONS",
-                // "CONFIGURATIONS",
+                ("DIRECTORY", 0),
+                ("FILE_PERMISSIONS", 0),
+                ("DIRECTORY_PERMISSIONS", 0),
+                //("CONFIGURATIONS", 0),
+                //("TYPE", 0),
+                //("DESTINATION", 0),
+                //("COMPONENT", 0),
+                //("PATTERN", 0),
+                //("REGEX", 0),
 
                 // installing exports
-                // "PERMISSIONS",
-                // "CONFIGURATIONS",
-            ]
-        )
-    ]
-    .iter()
-    .map(|(k, v)| (k.clone(), v.iter().map(|v| v.to_string()).collect()))
-    .collect();
-    static ref SCOPE_ARGS_END: HashMap<&'static str, Vec<String>> = [
-        ("get_property", vec!["PROPERTY"]),
-        (
-            "install",
-            vec![
-                // installing targets
-
-                // installing files
-
-                // installing directories
-                "TYPE",
-                "DESTINATION",
-
-                // installing exports
-            ]
-        )
-    ]
-    .iter()
-    .map(|(k, v)| (k.clone(), v.iter().map(|v| v.to_string()).collect()))
-    .collect();
-    static ref INLINE_ARGS: HashMap<&'static str, Vec<String>> = [
-        ("get_property", vec!["DIRECTORY", "TARGET", "SOURCE", "INSTALL", "TEST", "CACHE", "PROPERTY"]),
-        (
-            "install",
-            vec![
-                // installing targets
-                "DESTINATION",
-                "INCLUDES",
-                "COMPONENT",
-
-                // installing files
-                "TYPE",
-                // "DESTINATION",
-                // "COMPONENT",
-                "RENAME",
-
-                // installing directories
-                // "TYPE",
-                // "DESTINATION",
-                // "COMPONENT",
-                "PATTERN",
-                "REGEX",
+                //("PERMISSIONS", 0),
+                //("CONFIGURATIONS", 0),
+                ("EXPORT", 0),
+                //("DESTINATION", 0),
+                ("NAMESPACE", 0),
+                ("FILE", 0),
+                //("COMPONENT", 0),
 
                 // custom install logic
-                "SCRIPT",
-                "CODE",
-                // "COMPONENT",
-
-                // installing exports
-                "EXPORT",
-                // "DESTINATION",
-                "NAMESPACE",
-                "FILE",
-                // "COMPONENT",
+                ("SCRIPT", 0),
+                ("CODE", 0),
+                //("COMPONENT", 0),
+            ]
+        ),
+        (
+            "__install_targets",
+            vec![
+                // installing targets
+                ("TARGETS", 0),
+                ("ARCHIVE", 0),
+                ("LIBRARY", 0),
+                ("RUNTIME", 0),
+                ("OBJECTS", 0),
+                ("FRAMEWORK", 0),
+                ("BUNDLE", 0),
+                ("PRIVATE_HEADER", 0),
+                ("PUBLIC_HEADER", 0),
+                ("RESOURCE", 0),
+                ("DESTINATION", 1),
+                ("PERMISSIONS", 1),
+                ("CONFIGURATIONS", 1),
+                ("COMPONENT", 1),
+                ("NAMELINK_COMPONENT", 1),
+                ("NAMELINK_SKIP", 1),
+                ("INCLUDES", 0),
             ]
         )
     ]
     .iter()
-    .map(|(k, v)| (k.clone(), v.iter().map(|v| v.to_string()).collect()))
+    .map(|(k, v)| (k.clone(), v.iter().map(|(v,l)| (v.to_string(),*l)).collect()))
     .collect();
 }
 
@@ -153,6 +124,10 @@ pub fn format_str(mut input: &str) -> String {
             input = remainder;
         } else if let Ok((remainder, function)) = parse_function(input) {
             if SCOPE_END.contains(&function.name) {
+                if indent_n == 0 {
+                    eprintln!("ERROR: too many closed scopes");
+                    std::process::exit(1);
+                }
                 indent_n -= 1;
             }
             result += &format_function(&function, indent_n);
@@ -192,7 +167,8 @@ fn format_function(function: &Function, indent_n: usize) -> String {
         }
         None => Some(indent_n + 1),
     };
-    let args = format_function_args(&function.args, n_indent, &function.name);
+    let mut args = String::new();
+    format_function_args(&mut args, &function.args, n_indent, &function.name);
 
     let indent = "\t".repeat(indent_n);
     if n_indent.is_some() {
@@ -202,56 +178,21 @@ fn format_function(function: &Function, indent_n: usize) -> String {
     }
 }
 
-fn format_function_args(args: &[Arg], indent_n: Option<usize>, function_name: &str) -> String {
-    let mut result = String::new();
+fn format_function_args(
+    mut result: &mut String,
+    args: &[Arg],
+    indent_n: Option<usize>,
+    function_name: &str,
+) {
     if args.len() == 0 {
-        return result;
+        return;
     }
     match indent_n {
         Some(indent_n) => {
-            let mut indent = "\n".to_string() + &"\t".repeat(indent_n);
-            let mut last_was_inline = false;
-            let section_begin = SCOPE_ARGS_BEGIN.get(function_name);
-            let section_end = match args[0] {
-                Arg::Plain(v) if function_name == "install" && (v == "TARGETS") => None,
-                _ => SCOPE_ARGS_END.get(function_name),
-            };
-            let inline = INLINE_ARGS.get(function_name);
-            for arg in args {
-                let this_indent = if last_was_inline { " " } else { &indent };
-                last_was_inline = false;
-                match arg {
-                    Arg::Plain(v) => {
-                        if inline.and_then(|s| s.iter().find(|s| s == v)).is_some() {
-                            last_was_inline = true;
-                        }
-
-                        if section_begin
-                            .and_then(|s| s.iter().find(|s| s == v))
-                            .is_some()
-                        {
-                            indent = "\n".to_string() + &"\t".repeat(indent_n + 1);
-                            result.push_str(&format!("\n{}{}", "\t".repeat(indent_n), v))
-                        } else if section_end
-                            .and_then(|s| s.iter().find(|s| s == v))
-                            .is_some()
-                        {
-                            indent = "\n".to_string() + &"\t".repeat(indent_n);
-                            result.push_str(&format!("\n{}{}", "\t".repeat(indent_n), v))
-                        } else {
-                            result.push_str(&format!("{}{}", this_indent, v))
-                        };
-                    }
-                    Arg::Quoted(v) => result.push_str(&format!("{}\"{}\"", this_indent, v)),
-                    Arg::Comment(v) => result.push_str(&format!("{}{}", this_indent, v)),
-                    Arg::TrailingComment(v) => result.push_str(&format!("  {}", v)),
-                    Arg::Braced(v) => result.push_str(&format!(
-                        "{}({}{})",
-                        this_indent,
-                        format_function_args(v, Some(indent_n + 1), function_name),
-                        this_indent
-                    )),
-                }
+            let sections = section_args(args, function_name);
+            let inline = false;
+            for section in &sections {
+                format_function_section(&mut result, section, indent_n, inline, function_name);
             }
         }
         None => {
@@ -264,14 +205,138 @@ fn format_function_args(args: &[Arg], indent_n: Option<usize>, function_name: &s
                     Arg::Quoted(v) => result.push_str(&format!("\"{}\"", v)),
                     Arg::Comment(_) => unreachable!(),
                     Arg::TrailingComment(_) => unreachable!(),
-                    Arg::Braced(v) => result.push_str(&format!(
-                        "({})",
-                        format_function_args(v, None, function_name),
-                    )),
+                    Arg::Braced(v) => {
+                        result.push('(');
+                        format_function_args(&mut result, v, None, function_name);
+                        result.push(')');
+                    }
                 }
             }
         }
     };
+}
+
+fn format_function_section(
+    mut result: &mut String,
+    section: &Section,
+    indent_n: usize,
+    inline: bool,
+    function_name: &str,
+) {
+    format_function_arg(&mut result, section.header, indent_n, inline, function_name);
+
+    let inline = section.members.len() == 1;
+    let next_indent = if inline { indent_n } else { indent_n + 1 };
+    for section in &section.members {
+        format_function_section(&mut result, section, next_indent, inline, function_name);
+    }
+}
+
+fn format_function_arg(
+    mut result: &mut String,
+    arg: &Arg,
+    indent_n: usize,
+    inline: bool,
+    function_name: &str,
+) {
+    let indent = if inline {
+        " ".to_string()
+    } else {
+        "\n".to_string() + &"\t".repeat(indent_n)
+    };
+    match arg {
+        Arg::Plain(v) => result.push_str(&format!("{}{}", indent, v)),
+        Arg::Quoted(v) => result.push_str(&format!("{}\"{}\"", indent, v)),
+        Arg::Comment(v) => result.push_str(&format!("{}{}", indent, v)),
+        Arg::TrailingComment(v) => result.push_str(&format!("  {}", v)),
+        Arg::Braced(v) => {
+            result.push_str(&indent);
+            result.push('(');
+            format_function_args(&mut result, v, Some(indent_n + 1), function_name);
+            result.push_str(&indent);
+            result.push(')');
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Section<'a> {
+    header: &'a Arg<'a>,
+    members: Vec<Section<'a>>,
+}
+impl<'a> Section<'a> {
+    fn new(header: &'a Arg<'a>) -> Section {
+        Section {
+            header,
+            members: vec![],
+        }
+    }
+}
+fn section_args<'a>(args: &'a [Arg<'a>], function_name: &'a str) -> Vec<Section<'a>> {
+    let indented = indent_args(args, function_name);
+    //println!("indented: {:?}", indented);
+    let result = section_args_recurse(&indented, 0, 0).0;
+    println!("{:#?}", result);
+    result
+}
+
+fn section_args_recurse<'a, 'b>(
+    args: &'b [IndentArg<'a>],
+    cur_indent: usize,
+    mut cur_idx: usize,
+) -> (Vec<Section<'a>>, usize) {
+    let mut result: Vec<Section> = vec![];
+    while cur_idx < args.len() {
+        let &(arg, indent) = &args[cur_idx];
+        if indent == cur_indent {
+            result.push(Section::new(arg));
+            cur_idx += 1;
+        } else if indent > cur_indent {
+            let (members, next_idx) = section_args_recurse(args, cur_indent + 1, cur_idx);
+            cur_idx = next_idx;
+            result.last_mut().unwrap().members = members;
+        } else {
+            break;
+        }
+    }
+    (result, cur_idx)
+}
+
+type IndentArg<'a> = (&'a Arg<'a>, usize);
+fn indent_args<'a>(args: &'a [Arg<'a>], function_name: &'a str) -> Vec<IndentArg<'a>> {
+    let section_begin = match args.get(0) {
+        Some(Arg::Plain("TARGETS")) if function_name == "install" => SCOPE_ARGS_BEGIN
+            .get("__install_targets")
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
+        _ => SCOPE_ARGS_BEGIN
+            .get(function_name)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
+    };
+
+    let mut result: Vec<IndentArg> = vec![];
+    let mut cur_indent = 0;
+    for arg in args {
+        match arg {
+            Arg::Plain(v) => {
+                let scope = section_begin.iter().find(|s| s.0 == **v);
+                //let is_end = section_end.iter().find(|s| s == v).is_some();
+                match scope {
+                    Some(&(_, level)) => {
+                        result.push((arg, level));
+                        cur_indent = level + 1;
+                    }
+                    None => {
+                        result.push((arg, cur_indent));
+                    }
+                }
+            }
+            Arg::Quoted(_) | Arg::Comment(_) | Arg::TrailingComment(_) | Arg::Braced(_) => {
+                result.push((arg, cur_indent));
+            }
+        }
+    }
     result
 }
 
@@ -441,12 +506,9 @@ install(
             DESTINATION MeshToolkit/bin
 )";
         let expected = "install(
-\tTARGETS
-\t\tMeshToolkit
-\tRUNTIME
-\t\tDESTINATION MeshToolkit/bin
-\tLIBRARY
-\t\tDESTINATION MeshToolkit/bin
+\tTARGETS MeshToolkit
+\tRUNTIME DESTINATION MeshToolkit/bin
+\tLIBRARY DESTINATION MeshToolkit/bin
 )\n";
         let formatted = format_str(input);
         assert_eq!(expected, formatted);
@@ -463,10 +525,10 @@ install(
     EXCLUDE
 )";
         let expected = "install(
-\tDIRECTORY
-\t\t${MW_REPOSITORY_DIR}/5axis/customer/IntegrationSamples
+\tDIRECTORY ${MW_REPOSITORY_DIR}/5axis/customer/IntegrationSamples
 \tDESTINATION .
-\tPATTERN \".owner.py\"
+\tPATTERN
+\t\t\".owner.py\"
 \t\tEXCLUDE
 )\n";
         let formatted = format_str(input);
