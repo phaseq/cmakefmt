@@ -276,7 +276,7 @@ fn section_args<'a>(args: &'a [Arg<'a>], function_name: &'a str) -> Vec<Section<
     let indented = indent_args(args, function_name);
     //println!("indented: {:?}", indented);
     let result = section_args_recurse(&indented, 0, 0).0;
-    println!("{:#?}", result);
+    //println!("{:#?}", result);
     result
 }
 
