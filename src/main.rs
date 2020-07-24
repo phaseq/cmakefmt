@@ -410,7 +410,7 @@ fn parse_trailing_spaces(input: &str) -> IResult<&str, &str> {
 }
 
 fn parse_keyword(input: &str) -> IResult<&str, &str> {
-    let (input, keyword) = take_while1(|c| ('A'..='Z').contains(&c) || "_-".contains(c))(input)?;
+    let (input, keyword) = take_while1(|c| ('A'..='Z').contains(&c) || "_".contains(c))(input)?;
     alt((parse_space, tag(")")))(input)?;
     Ok((input, keyword))
 }
