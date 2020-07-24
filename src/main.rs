@@ -125,19 +125,16 @@ lazy_static! {
 }
 
 fn main() -> std::io::Result<()> {
-    //let input = std::fs::read_to_string("/home/fabianb/Dev/Moduleworks/dev/CMakeLists.txt")?;
-    let input =
-        std::fs::read_to_string("/home/fabianb/Dev/Moduleworks/dev/mwPackages/releasecut.cmake")?;
+    let args: Vec<_> = std::env::args().collect();
+    let input = match args.get(1) {
+        Some(path) => std::fs::read_to_string(path)?,
+        None => {
+            eprintln!("usage: {} <input_file>", args[0]);
+            std::process::exit(1);
+        }
+    };
+
     let input = input.as_str();
-    //let mut input = "# this is a comment\ncommand(a b c \"(l\\\"ol)\" 3.13)";
-    /*let input = r#"
-    if (a AND (b OR c))
-    add_library(abc
-        PUBLIC
-            # leading comment
-            "path/to/.cpp" # trailing comment
-    )
-    endif()"#;*/
 
     let result = format_str(input);
     println!("{}", result);
