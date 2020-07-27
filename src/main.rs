@@ -15,8 +15,11 @@ const SCOPE_END: &[&str] = &[
     "endfunction",
     "endmacro",
 ];
+
 // for some commands we don't want the auto-nesting behavior: all arguments should be shown on the same level
 const DISABLED_NESTING: &[&str] = &["option", "set", "foreach", "list", "string", "file"];
+
+const DISABLE_INLINE_ARGS: &[&str] = &["PUBLIC", "PRIVATE", "INTERFACE"];
 
 struct Cli {
     help: bool,
@@ -106,16 +109,10 @@ pub fn format_str(mut input: &str) -> String {
 }
 
 fn format_function(function: &Function, indent_n: usize) -> String {
-    let len = function_args_len(&function.args).map(|l| l + function.name.len() + 2);
-    let n_indent = match len {
-        Some(len) => {
-            if len < 80 - 4 * indent_n {
-                None // output all in one line
-            } else {
-                Some(indent_n + 1)
-            }
-        }
-        None => Some(indent_n + 1),
+    let n_indent = if allow_inline(function, indent_n) {
+        None
+    } else {
+        Some(indent_n + 1)
     };
     let mut args = String::new();
     format_function_args(&mut args, &function.args, n_indent, &function.name);
@@ -125,6 +122,30 @@ fn format_function(function: &Function, indent_n: usize) -> String {
         format!("{}{}({}\n{})", indent, function.name, args, indent)
     } else {
         format!("{}{}({})", indent, function.name, args)
+    }
+}
+
+fn allow_inline(function: &Function, indent_n: usize) -> bool {
+    for arg in &function.args {
+        match arg {
+            Arg::Keyword(k) => {
+                if DISABLE_INLINE_ARGS.contains(&k) {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    let len = function_args_len(&function.args).map(|l| l + function.name.len() + 2);
+    match len {
+        Some(len) => {
+            if len < 80 - 4 * indent_n {
+                true
+            } else {
+                false
+            }
+        }
+        None => false,
     }
 }
 
@@ -176,7 +197,11 @@ fn format_function_section(
 ) {
     format_function_arg(&mut result, section.header, indent_n, inline, function_name);
 
-    let inline = section.members.len() == 1;
+    let allow_inline = match section.header {
+        Arg::Keyword(k) => !DISABLE_INLINE_ARGS.contains(&k),
+        _ => true,
+    };
+    let inline = allow_inline && section.members.len() == 1;
     let next_indent = if inline { indent_n } else { indent_n + 1 };
     for section in &section.members {
         format_function_section(&mut result, section, next_indent, inline, function_name);
