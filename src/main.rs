@@ -17,9 +17,19 @@ const SCOPE_END: &[&str] = &[
 ];
 
 // for some commands we don't want the auto-nesting behavior: all arguments should be shown on the same level
-const DISABLED_NESTING: &[&str] = &["option", "set", "foreach", "list", "string", "file"];
+const DISABLE_NESTING_FUNCTIONS: &[&str] = &["option", "set", "foreach", "list", "string", "file"];
 
-const DISABLE_INLINE_ARGS: &[&str] = &["PUBLIC", "PRIVATE", "INTERFACE"];
+const DISABLE_INLINE_FUNCTIONS: &[&str] = &[
+    "target_compile_definitions",
+    "target_compile_features",
+    "target_compile_options",
+    "target_include_directories",
+    "target_link_directories",
+    "target_link_libraries",
+    "target_link_options",
+    "target_precompile_headers",
+    "target_sources",
+];
 
 struct Cli {
     help: bool,
@@ -126,15 +136,8 @@ fn format_function(function: &Function, indent_n: usize) -> String {
 }
 
 fn allow_inline(function: &Function, indent_n: usize) -> bool {
-    for arg in &function.args {
-        match arg {
-            Arg::Keyword(k) => {
-                if DISABLE_INLINE_ARGS.contains(&k) {
-                    return false;
-                }
-            }
-            _ => {}
-        }
+    if DISABLE_INLINE_FUNCTIONS.contains(&function.name) {
+        return false;
     }
     let len = function_args_len(&function.args).map(|l| l + function.name.len() + 2);
     match len {
@@ -197,10 +200,7 @@ fn format_function_section(
 ) {
     format_function_arg(&mut result, section.header, indent_n, inline, function_name);
 
-    let allow_inline = match section.header {
-        Arg::Keyword(k) => !DISABLE_INLINE_ARGS.contains(&k),
-        _ => true,
-    };
+    let allow_inline = !DISABLE_INLINE_FUNCTIONS.contains(&function_name);
     let inline = allow_inline && section.members.len() == 1;
     let next_indent = if inline { indent_n } else { indent_n + 1 };
     for section in &section.members {
@@ -298,7 +298,7 @@ fn indent_args<'a>(args: &'a [Arg<'a>], function_name: &'a str) -> Vec<IndentArg
         _ if function_name == "install" => &["EXCLUDE"],
         _ => &[],
     };
-    let allow_nesting = !DISABLED_NESTING.contains(&function_name);
+    let allow_nesting = !DISABLE_NESTING_FUNCTIONS.contains(&function_name);
 
     let mut result: Vec<IndentArg> = vec![];
     let mut cur_indent = 0;
