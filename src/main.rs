@@ -186,7 +186,8 @@ fn format_function_args(
                 match arg {
                     Arg::Keyword(v) => result.push_str(v),
                     Arg::Unquoted(v) => result.push_str(v),
-                    Arg::Quoted(v) => result.push_str(&format!("\"{}\"", v)),
+                    Arg::Quoted(v) => result.push_str(v),
+                    Arg::GenExp(v) => result.push_str(v),
                     Arg::Comment(_) => unreachable!(),
                     Arg::TrailingComment(_) => unreachable!(),
                     Arg::Braced(v) => {
@@ -230,10 +231,9 @@ fn format_function_arg(
         "\n".to_string() + &"\t".repeat(indent_n)
     };
     match arg {
-        Arg::Unquoted(v) | Arg::Keyword(v) | Arg::Comment(v) => {
+        Arg::Unquoted(v) | Arg::Keyword(v) | Arg::Quoted(v) | Arg::GenExp(v) | Arg::Comment(v) => {
             result.push_str(&format!("{}{}", indent, v))
         }
-        Arg::Quoted(v) => result.push_str(&format!("{}\"{}\"", indent, v)),
         Arg::TrailingComment(v) => result.push_str(&format!("  {}", v)),
         Arg::Braced(v) => {
             result.push_str(&indent);
@@ -385,7 +385,8 @@ fn function_args_len(args: &[Arg]) -> Option<usize> {
         match arg {
             Arg::Keyword(v) => sum += v.len(),
             Arg::Unquoted(v) => sum += v.len(),
-            Arg::Quoted(v) => sum += v.len() + 2,
+            Arg::Quoted(v) => sum += v.len(),
+            Arg::GenExp(v) => sum += v.len(),
             Arg::Comment(_) => return None,
             Arg::TrailingComment(_) => return None,
             Arg::Braced(v) => sum += function_args_len(v)? + 2,
@@ -422,11 +423,13 @@ struct Function<'a> {
     name: &'a str,
     args: Vec<Arg<'a>>,
 }
+
 #[derive(Debug)]
 enum Arg<'a> {
     Keyword(&'a str),
     Unquoted(&'a str),
     Quoted(&'a str),
+    GenExp(&'a str),
     Comment(&'a str),
     TrailingComment(&'a str),
     Braced(Vec<Arg<'a>>),
@@ -456,6 +459,9 @@ fn parse_function_args<'a>(input: &'a str) -> IResult<&'a str, Vec<Arg<'a>>> {
         } else if let Ok((i, s)) = parse_string(input) {
             input = i;
             r.push(Arg::Quoted(s));
+        } else if let Ok((i, s)) = parse_genexp(input) {
+            input = i;
+            r.push(Arg::GenExp(s));
         } else if let Ok((i, c)) = parse_comment(input) {
             input = i;
             r.push(Arg::Comment(c));
@@ -493,6 +499,27 @@ fn parse_trailing_spaces(input: &str) -> IResult<&str, &str> {
     take_while1(|c| c == ' ' || c == '\t')(input)
 }
 
+fn parse_genexp(input: &str) -> IResult<&str, &str> {
+    tag("$<")(input)?;
+    let mut skip_bracket = false;
+    let mut nesting = 0;
+    for (i, ch) in input.char_indices() {
+        if ch == '\\' && !skip_bracket {
+            skip_bracket = true;
+        } else if ch == '<' && !skip_bracket {
+            nesting += 1;
+        } else if ch == '>' && !skip_bracket {
+            nesting -= 1;
+            if nesting == 0 {
+                return Ok((&input[i + 1..], &input[..=i]));
+            }
+        } else {
+            skip_bracket = false;
+        }
+    }
+    Err(nom::Err::Incomplete(nom::Needed::Unknown))
+}
+
 fn parse_keyword(input: &str) -> IResult<&str, &str> {
     let (input, _) = nom::combinator::not(tag("MW_"))(input)?;
     let (input, keyword) = take_while1(|c| ('A'..='Z').contains(&c) || "_".contains(c))(input)?;
@@ -506,13 +533,13 @@ fn parse_unquoted_arg(input: &str) -> IResult<&str, &str> {
 }
 
 fn parse_string(input: &str) -> IResult<&str, &str> {
-    let (input, _) = tag("\"")(input)?;
+    tag("\"")(input)?;
     let mut skip_delimiter = false;
-    for (i, ch) in input.char_indices() {
+    for (i, ch) in input.char_indices().skip(1) {
         if ch == '\\' && !skip_delimiter {
             skip_delimiter = true;
         } else if ch == '"' && !skip_delimiter {
-            return Ok((&input[i + 1..], &input[..i]));
+            return Ok((&input[i + 1..], &input[..=i]));
         } else {
             skip_delimiter = false;
         }
