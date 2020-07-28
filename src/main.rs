@@ -286,7 +286,42 @@ fn section_args_recurse<'a, 'b>(
 
 type IndentArg<'a> = (&'a Arg<'a>, usize);
 fn indent_args<'a>(args: &'a [Arg<'a>], function_name: &'a str) -> Vec<IndentArg<'a>> {
-    let extra_indent: &[&'static str] = match args.get(0) {
+    let keyword_opens_scope: Box<dyn Fn(&str) -> bool> = match function_name {
+        // for some commands we give the nesting arguments explicitly
+        "target_compile_definitions"
+        | "target_compile_features"
+        | "target_compile_options"
+        | "target_include_directories"
+        | "target_link_directories"
+        | "target_link_libraries"
+        | "target_link_options"
+        | "target_precompile_headers" => {
+            Box::new(|arg| ["PUBLIC", "PRIVATE", "INTERFACE"].contains(&arg))
+        }
+
+        // some functions should never be nested
+        _ if DISABLE_NESTING_FUNCTIONS.contains(&function_name) => Box::new(|_arg| false),
+
+        // by default: open a scope if the argument has the format of SOME_KEYWORD
+        _ => Box::new(|_arg| true),
+    };
+    let keyword_opens_nested_scope: &[&'static str] = match args.get(0) {
+        // handle nested scopes for this command:
+        // https://cmake.org/cmake/help/latest/command/install.html
+        //
+        // install(TARGETS targets... [EXPORT <export-name>]
+        //     [[ARCHIVE|LIBRARY|RUNTIME|OBJECTS|FRAMEWORK|BUNDLE|
+        //       PRIVATE_HEADER|PUBLIC_HEADER|RESOURCE]
+        //      [DESTINATION <dir>]
+        //      [PERMISSIONS permissions...]
+        //      [CONFIGURATIONS [Debug|Release|...]]
+        //      [COMPONENT <component>]
+        //      [NAMELINK_COMPONENT <component>]
+        //      [OPTIONAL] [EXCLUDE_FROM_ALL]
+        //      [NAMELINK_ONLY|NAMELINK_SKIP]
+        //     ] [...]
+        //     [INCLUDES DESTINATION [<dir> ...]]
+        // )
         Some(Arg::Keyword("TARGETS")) if function_name == "install" => &[
             "DESTINATION",
             "PERMISSIONS",
@@ -295,17 +330,32 @@ fn indent_args<'a>(args: &'a [Arg<'a>], function_name: &'a str) -> Vec<IndentArg
             "NAMELINK_COMPONENT",
             "NAMELINK_SKIP",
         ],
+
+        // handle nested scopes for this command:
+        // install(DIRECTORY dirs...
+        //     TYPE <type> | DESTINATION <dir>
+        //     [FILE_PERMISSIONS permissions...]
+        //     [DIRECTORY_PERMISSIONS permissions...]
+        //     [USE_SOURCE_PERMISSIONS] [OPTIONAL] [MESSAGE_NEVER]
+        //     [CONFIGURATIONS [Debug|Release|...]]
+        //     [COMPONENT <component>] [EXCLUDE_FROM_ALL]
+        //     [FILES_MATCHING]
+        //     [[PATTERN <pattern> | REGEX <regex>]
+        //      [EXCLUDE] [PERMISSIONS permissions...]] [...])
         _ if function_name == "install" => &["EXCLUDE"],
         _ => &[],
     };
-    let allow_nesting = !DISABLE_NESTING_FUNCTIONS.contains(&function_name);
 
     let mut result: Vec<IndentArg> = vec![];
     let mut cur_indent = 0;
     for arg in args {
         match arg {
-            Arg::Keyword(v) if allow_nesting => {
-                let level = if extra_indent.contains(v) { 1 } else { 0 };
+            Arg::Keyword(v) if keyword_opens_scope(v) => {
+                let level = if keyword_opens_nested_scope.contains(v) {
+                    1
+                } else {
+                    0
+                };
                 result.push((arg, level));
                 cur_indent = level + 1;
             }
