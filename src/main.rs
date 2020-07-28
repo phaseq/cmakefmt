@@ -17,7 +17,16 @@ const SCOPE_END: &[&str] = &[
 ];
 
 // for some commands we don't want the auto-nesting behavior: all arguments should be shown on the same level
-const DISABLE_NESTING_FUNCTIONS: &[&str] = &["option", "set", "foreach", "list", "string", "file"];
+const DISABLE_NESTING_FUNCTIONS: &[&str] = &[
+    "option",
+    "set",
+    "foreach",
+    "list",
+    "string",
+    "file",
+    "add_library",
+    "add_executable",
+];
 
 const DISABLE_INLINE_FUNCTIONS: &[&str] = &[
     "target_compile_definitions",
