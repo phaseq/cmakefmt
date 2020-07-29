@@ -501,20 +501,28 @@ fn parse_trailing_spaces(input: &str) -> IResult<&str, &str> {
 
 fn parse_genexp(input: &str) -> IResult<&str, &str> {
     tag("$<")(input)?;
-    let mut skip_bracket = false;
+    let mut is_escaped = false;
     let mut nesting = 0;
-    for (i, ch) in input.char_indices() {
-        if ch == '\\' && !skip_bracket {
-            skip_bracket = true;
-        } else if ch == '<' && !skip_bracket {
+    let mut char_indices = input.char_indices();
+    loop {
+        let (i, ch) = match char_indices.next() {
+            Some((i, ch)) => (i, ch),
+            _ => break,
+        };
+        if ch == '\\' && !is_escaped {
+            is_escaped = true;
+        } else if ch == '<' && !is_escaped {
             nesting += 1;
-        } else if ch == '>' && !skip_bracket {
+        } else if ch == '>' && !is_escaped {
             nesting -= 1;
             if nesting == 0 {
                 return Ok((&input[i + 1..], &input[..=i]));
             }
+        } else if ch == '"' && !is_escaped {
+            let (_tail, s) = parse_string(&input[i..])?;
+            char_indices.nth(s.len() - 2).unwrap();
         } else {
-            skip_bracket = false;
+            is_escaped = false;
         }
     }
     Err(nom::Err::Incomplete(nom::Needed::Unknown))
@@ -552,19 +560,18 @@ mod tests {
     use crate::format_str;
 
     #[test]
-    fn format_function() {
-        let input = "
-add_library(abc PUBLIC
+    fn target_compile_definitions() {
+        let input = "target_compile_definitions(abc PUBLIC
     # leading comment
-    path/to/.cpp # trailing comment
-    \"path with space\"
+    SOME_DEFINITION # trailing comment
+    \"something with spaces\"
 )";
-        let expected = "add_library(
+        let expected = "target_compile_definitions(
 \tabc
 \tPUBLIC
 \t\t# leading comment
-\t\tpath/to/.cpp  # trailing comment
-\t\t\"path with space\"
+\t\tSOME_DEFINITION  # trailing comment
+\t\t\"something with spaces\"
 )
 ";
         let formatted = format_str(input);
@@ -702,6 +709,39 @@ endif()\n";
 \t\"set(CPACK_PACKAGE_FILE_NAME \\\"${CPACK_PACKAGE_FILE_NAME}\\\")\\n\"
 )\n";
         let formatted = format_str(input);
+        assert_eq!(expected, formatted);
+    }
+
+    #[test]
+    fn genexp() {
+        let input = r#"target_link_options(
+			${target_name}
+			PRIVATE
+				$<$<CONFIG:Debug>:/NODEFAULTLIB:libcmtd.lib>
+				$<$<CONFIG:Release>:/NODEFAULTLIB:libcmt.lib /OPT:REF /OPT:ICF>
+        )"#;
+        let expected = "target_link_options(
+\t${target_name}
+\tPRIVATE
+\t\t$<$<CONFIG:Debug>:/NODEFAULTLIB:libcmtd.lib>
+\t\t$<$<CONFIG:Release>:/NODEFAULTLIB:libcmt.lib /OPT:REF /OPT:ICF>
+)\n";
+        let formatted = format_str(input);
+        assert_eq!(expected, formatted);
+    }
+
+    #[test]
+    fn genexp_with_quotes() {
+        let input = r#"custom_function(
+            $<$<CONFIG:Release>:"to annoy you: >">
+            $<$<CONFIG:Debug>:">>>">
+            )"#;
+        let expected = "custom_function(
+\t$<$<CONFIG:Release>:\"to annoy you: >\">
+\t$<$<CONFIG:Debug>:\">>>\">
+)\n";
+        let formatted = format_str(input);
+        println!("{}", formatted);
         assert_eq!(expected, formatted);
     }
 }
