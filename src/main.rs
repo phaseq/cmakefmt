@@ -3,6 +3,8 @@ use nom::bytes::complete::{tag, take_till, take_till1, take_while1};
 use nom::sequence::delimited;
 use nom::IResult;
 
+const LINE_LENGTH: usize = 80;
+
 const SCOPE_BEGIN: &[&str] = &[
     "if", "else", "elseif", "while", "foreach", "function", "macro",
 ];
@@ -134,7 +136,7 @@ fn format_function(function: &Function, indent_n: usize) -> String {
         Some(indent_n + 1)
     };
     let mut args = String::new();
-    format_function_args(&mut args, &function.args, n_indent, &function.name);
+    format_function_args(&mut args, &function.args, n_indent, function.name);
 
     let indent = "\t".repeat(indent_n);
     if n_indent.is_some() {
@@ -150,19 +152,13 @@ fn allow_inline(function: &Function, indent_n: usize) -> bool {
     }
     let len = function_args_len(&function.args).map(|l| l + function.name.len() + 2);
     match len {
-        Some(len) => {
-            if len < 80 - 4 * indent_n {
-                true
-            } else {
-                false
-            }
-        }
+        Some(len) => len < LINE_LENGTH - 4 * indent_n,
         None => false,
     }
 }
 
 fn format_function_args(
-    mut result: &mut String,
+    result: &mut String,
     args: &[Arg],
     indent_n: Option<usize>,
     function_name: &str,
@@ -175,7 +171,7 @@ fn format_function_args(
             let sections = section_args(args, function_name);
             let inline = false;
             for section in &sections {
-                format_function_section(&mut result, section, indent_n, inline, function_name);
+                format_function_section(result, section, indent_n, inline, function_name);
             }
         }
         None => {
@@ -192,7 +188,7 @@ fn format_function_args(
                     Arg::TrailingComment(_) => unreachable!(),
                     Arg::Braced(v) => {
                         result.push('(');
-                        format_function_args(&mut result, v, None, function_name);
+                        format_function_args(result, v, None, function_name);
                         result.push(')');
                     }
                 }
@@ -202,24 +198,24 @@ fn format_function_args(
 }
 
 fn format_function_section(
-    mut result: &mut String,
+    result: &mut String,
     section: &Section,
     indent_n: usize,
     inline: bool,
     function_name: &str,
 ) {
-    format_function_arg(&mut result, section.header, indent_n, inline, function_name);
+    format_function_arg(result, section.header, indent_n, inline, function_name);
 
     let allow_inline = !DISABLE_INLINE_FUNCTIONS.contains(&function_name);
     let inline = allow_inline && section.members.len() == 1;
     let next_indent = if inline { indent_n } else { indent_n + 1 };
     for section in &section.members {
-        format_function_section(&mut result, section, next_indent, inline, function_name);
+        format_function_section(result, section, next_indent, inline, function_name);
     }
 }
 
 fn format_function_arg(
-    mut result: &mut String,
+    result: &mut String,
     arg: &Arg,
     indent_n: usize,
     inline: bool,
@@ -238,7 +234,7 @@ fn format_function_arg(
         Arg::Braced(v) => {
             result.push_str(&indent);
             result.push('(');
-            format_function_args(&mut result, v, Some(indent_n + 1), function_name);
+            format_function_args(result, v, Some(indent_n + 1), function_name);
             result.push_str(&indent);
             result.push(')');
         }
@@ -266,8 +262,8 @@ fn section_args<'a>(args: &'a [Arg<'a>], function_name: &'a str) -> Vec<Section<
     result
 }
 
-fn section_args_recurse<'a, 'b>(
-    args: &'b [IndentArg<'a>],
+fn section_args_recurse<'a>(
+    args: &[IndentArg<'a>],
     cur_indent: usize,
     mut cur_idx: usize,
 ) -> (Vec<Section<'a>>, usize) {
@@ -314,7 +310,7 @@ fn indent_args<'a>(args: &'a [Arg<'a>], function_name: &'a str) -> Vec<IndentArg
         // by default: open a scope if the argument has the format of SOME_KEYWORD
         _ => Box::new(|_arg| true),
     };
-    let keyword_opens_nested_scope: &[&'static str] = match args.get(0) {
+    let keyword_opens_nested_scope: &[&'static str] = match args.first() {
         // handle nested scopes for this command:
         // https://cmake.org/cmake/help/latest/command/install.html
         //
@@ -435,14 +431,14 @@ enum Arg<'a> {
     Braced(Vec<Arg<'a>>),
 }
 
-fn parse_function<'a>(input: &'a str) -> IResult<&'a str, Function<'a>> {
+fn parse_function(input: &str) -> IResult<&str, Function<'_>> {
     let (input, name) = parse_unquoted_arg(input)?;
     let (input, _) = nom::multi::many0_count(parse_space)(input)?;
     let (input, args) = delimited(tag("("), parse_function_args, tag(")"))(input)?;
     Ok((input, Function { name, args }))
 }
 
-fn parse_function_args<'a>(input: &'a str) -> IResult<&'a str, Vec<Arg<'a>>> {
+fn parse_function_args(input: &str) -> IResult<&str, Vec<Arg<'_>>> {
     let mut r = vec![];
     let mut input = input;
     loop {
@@ -504,11 +500,7 @@ fn parse_genexp(input: &str) -> IResult<&str, &str> {
     let mut is_escaped = false;
     let mut nesting = 0;
     let mut char_indices = input.char_indices();
-    loop {
-        let (i, ch) = match char_indices.next() {
-            Some((i, ch)) => (i, ch),
-            _ => break,
-        };
+    while let Some((i, ch)) = char_indices.next() {
         if ch == '\\' && !is_escaped {
             is_escaped = true;
         } else if ch == '<' && !is_escaped {
@@ -530,7 +522,7 @@ fn parse_genexp(input: &str) -> IResult<&str, &str> {
 
 fn parse_keyword(input: &str) -> IResult<&str, &str> {
     let (input, _) = nom::combinator::not(tag("MW_"))(input)?;
-    let (input, keyword) = take_while1(|c| ('A'..='Z').contains(&c) || "_".contains(c))(input)?;
+    let (input, keyword) = take_while1(|c: char| c.is_ascii_uppercase() || "_".contains(c))(input)?;
     alt((parse_space, tag(")")))(input)?;
     Ok((input, keyword))
 }
