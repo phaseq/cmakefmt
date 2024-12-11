@@ -51,7 +51,7 @@ impl Cli {
         Some(Cli {
             help: args.contains(["-h", "--help"]),
             in_place: args.contains("-i"),
-            path: args.free().ok()?.get(0)?.clone(),
+            path: args.free_from_str::<String>().ok()?.to_string(),
         })
     }
 
@@ -251,7 +251,7 @@ struct Section<'a> {
     members: Vec<Section<'a>>,
 }
 impl<'a> Section<'a> {
-    fn new(header: &'a Arg<'a>) -> Section {
+    fn new(header: &'a Arg<'a>) -> Section<'a> {
         Section {
             header,
             members: vec![],
